@@ -1,0 +1,87 @@
+name: Nothing Firmware Dumper
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'URLs (comma or space separated)'
+        required: true
+      name:
+        description: 'Release tag'
+        required: false
+      fallback_model:
+        description: 'Fallback device model (if auto-detection fails)'
+        required: false
+        type: string
+      runner_type:
+        description: 'Runner type'
+        required: true
+        type: choice
+        default: 'self-hosted'
+        options:
+          - github
+          - self-hosted
+      run_maximize_github_runner_space:
+        description: 'Run maximize-github-runner-space? (GitHub runner only)'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  dump:
+    permissions:
+      contents: write
+      pull-requests: write
+
+    runs-on: >-
+      ${{
+        inputs.runner_type == 'self-hosted'
+        && fromJSON('["self-hosted", "Linux", "X64"]')
+        || 'ubuntu-latest'
+      }}
+
+    steps:
+      - name: Maximize Github Runner Space
+        if: >-
+          inputs.runner_type == 'github' &&
+          inputs.run_maximize_github_runner_space == 'true'
+        uses: justinthelaw/maximize-github-runner-space@v0.9.0
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup environment
+        if: inputs.runner_type == 'github'
+        run: |
+          sudo apt update
+          sudo apt -y install python3-pip aria2 zstd p7zip-full parallel openssl xxhash jq curl wget
+          python3 -m pip install gdown
+
+      - name: Set script permissions
+        run: chmod +x scripts/dump.sh
+
+      - name: Download & Process OTA Packages
+        id: dump
+        env:
+          FALLBACK_MODEL: ${{ inputs.fallback_model }}
+        run: |
+          export INPUT_NAME="${{ inputs.name }}"
+          echo "${{ inputs.urls }}" | tr ',' ' ' | xargs ./scripts/dump.sh
+
+      - name: Create tag
+        run: |
+          git fetch origin main
+          git tag "${{ steps.dump.outputs.release_tag }}" HEAD
+          git push origin "${{ steps.dump.outputs.release_tag }}"
+
+      - name: Upload release assets
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: out/*
+          artifactErrorsFailBuild: true
+          body: ${{ steps.dump.outputs.body }}
+          tag: ${{ steps.dump.outputs.release_tag }}
+          name: ${{ steps.dump.outputs.release_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
